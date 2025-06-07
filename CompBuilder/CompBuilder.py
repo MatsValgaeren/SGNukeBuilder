@@ -30,20 +30,6 @@ my_window = None
 # defaultconfig = os.environ.get('ocio', '/path/to/default_facility_config.ocio')
 # nuke.knobdefault('root.customocioconfigpath', defaultconfig)
 
-# publish_data = {
-#     "project": {"type": "Project", "id": 353},
-#     "code": "ts0020_0010",
-#     "description": "First publish from task",
-#     "path": {"local_path": xxx,
-#     "entity": {"type": "Task", "id": 15265},
-#     "published_file_type": {"type": "PublishedFileType", "id": 1},
-#     "version_number": 2,
-#     "created_by": {"type": "HumanUser", "id": RETRIEVED_USER_ID}
-# }
-#
-# publish = SG.create("PublishedFile", publish_data)
-# print("Published file ID:", publish["id"])
-
 class SGIO:
     def __init__(self, sg_api, user_id):
         self.sg = sg_api

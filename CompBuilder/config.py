@@ -25,3 +25,17 @@ FILE_FOLDER_LOCATION = r"C:\Users\matsv\Desktop\VfxSem2\Portfolio\CompBuilder"
 # SCRIPT_KEY = '950321e69a57a739d61f10d3f29dfbf733352128'
 #
 # SG = Shotgun(SERVER_PATH, SCRIPT_NAME, SCRIPT_KEY)
+
+# publish_data = {
+#     "project": {"type": "Project", "id": 353},
+#     "code": "ts0020_0010",
+#     "description": "First publish from task",
+#     "path": {"local_path": xxx,
+#     "entity": {"type": "Task", "id": 15265},
+#     "published_file_type": {"type": "PublishedFileType", "id": 1},
+#     "version_number": 2,
+#     "created_by": {"type": "HumanUser", "id": RETRIEVED_USER_ID}
+# }
+#
+# publish = SG.create("PublishedFile", publish_data)
+# print("Published file ID:", publish["id"])
