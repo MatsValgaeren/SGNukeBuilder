@@ -1,0 +1,10 @@
+# Ignore everything by default
+*
+
+# But do NOT ignore these files/folders:
+!.gitignore
+!init.py
+!menu.py
+!CompBuilder/
+!CompBuilder/**
+CompBuilder/config.py
