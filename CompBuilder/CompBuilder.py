@@ -7,19 +7,23 @@ import requests
 import subprocess
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication, QWidget, QMainWindow, QTreeView, QPushButton, QAbstractItemView
+from PySide6.QtWidgets import QApplication, QWidget, QMainWindow, QTreeView, QPushButton, QAbstractItemView, QLabel, QVBoxLayout, QPushButton
 from PySide6.QtGui import QStandardItem, QStandardItemModel, QFont, QColor
 
 from shotgun_api3.shotgun import Shotgun
-from config import SHOTGUN_API_KEY, SHOTGUN_SITE, SHOTGUN_SCRIPT_NAME, FILE_FOLDER_LOCATION
+from .config import SHOTGUN_API_KEY, SERVER_PATH, SHOTGUN_SCRIPT_NAME, FILE_FOLDER_LOCATION
 
 
-SG = Shotgun(SHOTGUN_SITE, SHOTGUN_SCRIPT_NAME,
+SG = Shotgun(SERVER_PATH, SHOTGUN_SCRIPT_NAME,
 api_key = SHOTGUN_API_KEY)
+
+
 RETRIEVED_USER_ID = os.getenv("USER_ID")
 RETRIEVED_USER_ID = 526
 
 my_window = None
+
+
 
 # nuke.knobdefault('root.colormanagement', 'ocio')
 # nuke.knobdefault('root.ocio_config', 'custom')
@@ -56,7 +60,8 @@ class SGIO:
             'content',
             'entity.Shot.code',
             'entity.Shot.sg_sequence',
-            'entity.Shot.project'
+            'entity.Shot.project',
+            'entity.Shot.id'
         ]
         try:
             tasks = self.sg.find('Task', filters, fields)
@@ -104,12 +109,6 @@ class SGIO:
                 # Or, get a specific OS path (e.g., local_path)
                 print("Local Path:", path_dict.get("local_path"))
 
-        # download_path = FILE_FOLDER_LOCATION + r"\connect_ts0020_0010_source_v001.mov"
-        # response = requests.get(movie_url)
-        # if response.status_code == 200:
-        #     with open(download_path, "wb") as f:
-        #         f.write(response.content)
-
     def video_to_images(self, input_video_dir, output_folder):
         print('starting')
         parts = os.path.normpath(output_folder).split(os.sep)
@@ -156,7 +155,22 @@ class MainWindow(QMainWindow):
         self.tree = QTreeView()
         self.tree.header().hide()
         self.tree.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.setCentralWidget(self.tree)
+
+        self.in_progress_button = self.add_button("In Progress", self.task_in_progress)
+        self.publish_button = self.add_button("Publish", self.task_publish)
+
+        self.main_widget = QWidget()
+        layout = QVBoxLayout(self.main_widget)
+
+        # Add widgets to the layout
+        layout.addWidget(QLabel("Project Status:"))
+        print(self.tree, 'tree')
+        layout.addWidget(self.tree)
+        layout.addWidget(self.in_progress_button)
+        layout.addWidget(self.publish_button)
+
+        # Set the main widget as the central widget
+        self.setCentralWidget(self.main_widget)
 
         # Get tasks from ShotGrid
         self.io_instance = sgio
@@ -166,7 +180,7 @@ class MainWindow(QMainWindow):
         self.tree.setModel(model)
         self.tree.expandAll()
 
-        self.add_button()
+
         print('init done')
 
 
@@ -180,7 +194,8 @@ class MainWindow(QMainWindow):
             key=lambda x: (
                 x["entity.Shot.project"]["name"],
                 x["entity.Shot.sg_sequence"]["name"],
-                x["entity.Shot.code"]
+                x["entity.Shot.code"],
+                x["entity.Shot.id"]
             )
         )
 
@@ -189,6 +204,7 @@ class MainWindow(QMainWindow):
             proj = task["entity.Shot.project"]["name"]
             seq = task["entity.Shot.sg_sequence"]["name"]
             shot = task["entity.Shot.code"]
+            id = task["entity.Shot.id"]
             # tsk = task["task"]
 
             if proj not in project_items:
@@ -237,6 +253,7 @@ class MainWindow(QMainWindow):
                     print("No version folders found.")
 
                 shot_item.setData(file_location, Qt.UserRole)
+                shot_item.setData(id, Qt.UserRole + 1)
                 seq_item.appendRow([shot_item])
                 shot_items[shot] = shot_item
             else:
@@ -244,10 +261,38 @@ class MainWindow(QMainWindow):
 
         self.tree.doubleClicked.connect(self.get_value)
 
+        print(model)
+
         return model
 
-    def add_button(self):
-        button = QPushButton()
+    def add_button(self, label, action):
+        button = QPushButton(label)
+        button.clicked.connect(lambda: action())
+        return button
+
+    def task_in_progress(self):
+        index = self.tree.currentIndex()
+        item = self.tree.model().itemFromIndex(index)
+        if item is None:
+            print("No item selected!")
+            return
+        task_id = item.data(Qt.UserRole + 1)
+        if not task_id:
+            print("No Task ID found for selected item!")
+            return
+        set_task_status(task_id, 'ip')
+
+    def task_publish(self):
+        index = self.tree.currentIndex()
+        item = self.tree.model().itemFromIndex(index)
+        if item is None:
+            print("No item selected!")
+            return
+        task_id = item.data(Qt.UserRole + 1)
+        if not task_id:
+            print("No Task ID found for selected item!")
+            return
+        set_task_status(task_id, 'pbl')
 
     def get_value(self, index):
         item = self.tree.model().itemFromIndex(index)
@@ -256,7 +301,7 @@ class MainWindow(QMainWindow):
             return
 
         file_location = item.data(Qt.UserRole)
-        print(f"File location: {file_location}")
+
 
         output_location = FILE_FOLDER_LOCATION + r"\Shotgrid Connect\shots\ts0020\0010\comp\input\v001\\"
         # output_location = file_location.replace("input", "output")
@@ -264,7 +309,7 @@ class MainWindow(QMainWindow):
         print('hey')
         self.io_instance.video_to_images(file_location, output_location)
         print('started comp making', self.io_instance.output_images)
-        create_comp(self.io_instance.output_images, )
+        create_comp(self.io_instance.output_images, task_id)
 
         # print(val.data())
         # print(val.row(), val.column())
@@ -307,6 +352,15 @@ def create_comp(input_images):
 
     write.setInput(0, read)
 
+    set_task_status
+
+def set_task_status(task_id, new_status):
+    try:
+        SG.update("Task", task_id, {"sg_status_list": new_status})
+        print(f"Task {task_id} status updated to {new_status}")
+    except Exception as e:
+        print(f"Failed to update status for Task {task_id}: {e}")
+
 
 def run():
     try:
@@ -319,4 +373,5 @@ def run():
         import traceback
         print("Exception in run():", e)
         traceback.print_exc()
+
 

@@ -1,7 +1,7 @@
 """
 Init file for running CompBuilder
 """
-from . import CompBuilder
+from CompBuilder import CompBuilder
 
 def run():
     print('started run')
