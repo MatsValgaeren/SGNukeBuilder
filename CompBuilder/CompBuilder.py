@@ -30,18 +30,21 @@ class SGIO:
     def __init__(self, sg_api, user_id):
         self.sg = sg_api
         self.user_id = user_id
-        self.can_work_on = ['rdy', 'rti', 'ip', 'att']
+        self.can_work_on = ['rdy', 'rti', 'rvi', 'ip', 'att']
 
     def get_tasks(self):
         filters = [
             ['task_assignees', 'in', [{'type': 'HumanUser', 'id': self.user_id}]],
-            ['sg_status_list', 'in', self.can_work_on]
+            ['sg_status_list', 'in', self.can_work_on],
+            ['step.Step.code', 'is', 'comp']
         ]
         fields = [
+            'id',
             'content',
             'entity.Shot.code',
             'entity.Shot.sg_sequence',
             'entity.Shot.project',
+            'entity.Shot.project.Project.id',
             'entity.Shot.id'
         ]
         try:
@@ -124,7 +127,7 @@ class SGIO:
         except Exception as e:
             print(f"Failed to update status for Task {task_id}: {e}")
 
-    def publish_video(self, video_file, proj_id, shot_id, task_id):
+    def publish_video(self, video_file, version, proj_id, shot_id, task_id):
         """Publish video to ShotGrid"""
         if not os.path.exists(video_file):
             print(f"Video file not found: {video_file}")
@@ -132,7 +135,7 @@ class SGIO:
 
         data = {
             "project": {"type": "Project", "id": proj_id},
-            "code": "v001",
+            "code": version,
             "description": f"Auto-published from script by user: {RETRIEVED_USER_ID}",
             "entity": {"type": "Shot", "id": shot_id},
             "sg_task": {"type": "Task", "id": task_id},
@@ -299,6 +302,7 @@ class PipelineFileManager:
 
         # Get next version for new output
         next_version = self.get_latest_version(comp_work_dir)
+
         output_dir = os.path.join(comp_output_dir, next_version)
 
         # Create directory if it doesn't exist
@@ -321,10 +325,15 @@ class PipelineFileManager:
 
         work_dir = os.path.join(shot_dir, "comp", "work")
 
-
         if new is False:
             version = self.get_latest_version(work_dir)
+            if version is None:
+                version = 'v001'
+
             print('latest v: ', version)
+            if version is None:
+                print("No existing version found.")
+                return None  # or return a default path or raise an exception
         else:
             version = self.get_next_version(work_dir)
 
@@ -456,16 +465,17 @@ class MainWindow(QMainWindow):
                 x["entity.Shot.project"]["name"],
                 x["entity.Shot.sg_sequence"]["name"],
                 x["entity.Shot.code"],
-                x["entity.Shot.id"]
+                x["id"]
             )
         )
 
         project_items = {}
         for task in tasks_sorted:
             proj = task["entity.Shot.project"]["name"].replace(' ', '')
-            seq = task["entity.Shot.sg_sequence"]["name"].replace(' ', '')
-            shot = task["entity.Shot.code"].split('_')[-1].replace(' ', '')
-            task_id = task["entity.Shot.id"]
+            seq = task["entity.Shot.sg_sequence"]["name"]
+            shot = task["entity.Shot.code"].split('_')[-1]
+            task_id = task["id"]
+            proj_id = task['entity.Shot.project.Project.id']
 
             # Build project level
             if proj not in project_items:
@@ -490,6 +500,7 @@ class MainWindow(QMainWindow):
                 shot_item.setData(seq, Qt.UserRole + 1)  # Store sequence
                 shot_item.setData(shot, Qt.UserRole + 2)  # Store shot
                 shot_item.setData(task_id, Qt.UserRole + 3)  # Store task ID
+                shot_item.setData(proj_id, Qt.UserRole + 4)
                 seq_item.appendRow([shot_item])
                 shot_items[shot] = shot_item
 
@@ -528,10 +539,11 @@ class MainWindow(QMainWindow):
             print("No item selected!")
             return
 
-        proj_id = item.data(Qt.UserRole)
         seq_id = item.data(Qt.UserRole + 1)
         shot_id = item.data(Qt.UserRole + 2)
         task_id = item.data(Qt.UserRole + 3)
+        proj_id = item.data(Qt.UserRole + 4)
+        print('proj id', proj_id)
         if not task_id:
             print("No Task ID found for selected item!")
             return
@@ -548,10 +560,13 @@ class MainWindow(QMainWindow):
 
         # Convert images to video
         video_file = self.io_instance.images_to_video(comp_output_path, publish_video_path)
+        base = os.path.splitext(os.path.basename(video_file))[0]
+        version = base[-4:]
 
         if video_file and os.path.exists(video_file):
-            # Publish to ShotGrid
-            self.io_instance.publish_video(video_file, proj_id, shot_id, task_id)
+            # def publish_video(self, video_file, version, proj_id, shot_id, task_id):
+            print(video_file, version, proj_id, shot_id, task_id)
+            self.io_instance.publish_video(video_file, version, proj_id, shot_id, task_id)
             self.io_instance.set_task_status(task_id, 'rvi')
             print('Changed status of task to Review Internal.')
         else:
@@ -596,8 +611,7 @@ class MainWindow(QMainWindow):
 
 class NukeHandler():
     def __init__(self):
-        self.read = None
-        self.write = None
+        self.write_name = 'RenderNode'
         self.pfm_instance = PipelineFileManager()
 
 
@@ -608,9 +622,9 @@ class NukeHandler():
 
         try:
             # Create Read node
-            self.read = nuke.nodes.Read(file=input_images.replace('\\', '/'))
-            # self.read["colorspace"].setValue('ACES - ACEScg')
-            self.read["colorspace"].setValue('Output - sRGB')
+            read_node = nuke.nodes.Read(file=input_images.replace('\\', '/'))
+            # read_node["colorspace"].setValue('ACES - ACEScg')
+            read_node["colorspace"].setValue('Output - sRGB')
 
             # Create Write node
             self.pfm_instance.tree = tree
@@ -620,11 +634,12 @@ class NukeHandler():
                 print("Could not determine output path")
                 return
 
-            self.write = nuke.nodes.Write(file=output_path.replace('\\', '/'))
-            self.write["colorspace"].setValue('Output - sRGB')
+            self.write_node = nuke.nodes.Write(file=output_path.replace('\\', '/'))
+            self.write_node.setName(self.write_name)
+            self.write_node["colorspace"].setValue('Output - sRGB')
 
             # Connect nodes
-            self.write.setInput(0, self.read)
+            self.write_node.setInput(0, read_node)
 
             dir_path = os.path.dirname(input_images)
             base_name = os.path.basename(input_images)
@@ -642,8 +657,8 @@ class NukeHandler():
                     first_frame = min(frames)
                     last_frame = max(frames)
 
-                    self.read["first"].setValue(first_frame)
-                    self.read["last"].setValue(last_frame)
+                    read_node["first"].setValue(first_frame)
+                    read_node["last"].setValue(last_frame)
                     nuke.root()["first_frame"].setValue(first_frame)
                     nuke.root()["last_frame"].setValue(last_frame)
 
@@ -658,23 +673,25 @@ class NukeHandler():
             print(f"Error creating Nuke composition: {e}")
 
     def render(self, tree):
+        write_node = nuke.toNode(self.write_name)
+
         self.pfm_instance.tree = tree
         self.pfm_instance.get_data()
-        if self.write is not None:
+        if write_node is not None:
             output_path = self.pfm_instance.get_comp_output_path(for_nuke=True)
             if not output_path:
                 print("Could not determine output path")
                 return
 
-            self.write = nuke.nodes.Write(file=output_path.replace('\\', '/'))
+            # write_node = nuke.nodes.Write(file=output_path.replace('\\', '/'))
 
-            output_dir = os.path.dirname(self.write["file"].value())
+            output_dir = os.path.dirname(write_node["file"].value())
             if not os.path.exists(output_dir):
                 os.makedirs(output_dir)
 
             first_frame = int(nuke.root()["first_frame"].value())
             last_frame = int(nuke.root()["last_frame"].value())
-            nuke.render(self.write, first_frame, last_frame)
+            nuke.render(write_node, first_frame, last_frame)
         else:
             print("Write node not set. Cannot render.")
 
