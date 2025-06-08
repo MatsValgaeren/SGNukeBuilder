@@ -11,19 +11,20 @@ from PySide6.QtWidgets import QApplication, QWidget, QMainWindow, QTreeView, QPu
 from PySide6.QtGui import QStandardItem, QStandardItemModel, QFont, QColor
 
 from shotgun_api3.shotgun import Shotgun
-from .config import SHOTGUN_API_KEY, SERVER_PATH, SHOTGUN_SCRIPT_NAME, FILE_FOLDER_LOCATION
-
-
-SG = Shotgun(SERVER_PATH, SHOTGUN_SCRIPT_NAME,
-api_key = SHOTGUN_API_KEY)
+from .config import SERVER_PATH, LOGIN, PASSWORD, FILE_FOLDER_LOCATION
 
 
 RETRIEVED_USER_ID = os.getenv("USER_ID")
-RETRIEVED_USER_ID = 526
+if not RETRIEVED_USER_ID:
+    print("USER_ID environment variable is not set")
+
+SG = Shotgun(
+    SERVER_PATH,
+    login = LOGIN,
+    password= PASSWORD
+)
 
 my_window = None
-
-
 
 # nuke.knobdefault('root.colormanagement', 'ocio')
 # nuke.knobdefault('root.ocio_config', 'custom')
@@ -51,52 +52,14 @@ class SGIO:
         ]
         try:
             tasks = self.sg.find('Task', filters, fields)
-            print(tasks)
             print(f"Retrieved {len(tasks)} tasks for user {self.user_id}")
             return tasks
         except Exception as e:
             print(f"Error fetching tasks: {e}")
             return []
 
-
-    def download_file(self):
-        fields = [
-            'content',
-            'entity.Shot.code',
-            'entity.Shot.sg_sequence',
-            'entity.Shot.project',
-            'sg_uploaded_movie'
-        ]
-
-        version = SG.find_one(
-            "Version",
-            [["entity", "is", {"type": "Shot", "id": 3885}]],
-            fields
-        )
-        # movie_url = version["PublishedFile"]["url"]
-        # # movie_url = version["sg_uploaded_movie"]["url"]
-        # print(movie_url)
-        # Get the list of published files from the version
-        published_files = version.get('published_files', [])
-
-        for pf in published_files:
-            # Query the PublishedFile entity for the 'path' field
-            pf_detail = SG.find_one(
-                "PublishedFile",
-                [["id", "is", pf["id"]]],
-                ["path"]
-            )
-            if pf_detail and pf_detail.get("path"):
-                path_dict = pf_detail["path"]
-                # Print all available paths
-                print("Published File Paths:")
-                for key, value in path_dict.items():
-                    print(f"  {key}: {value}")
-                # Or, get a specific OS path (e.g., local_path)
-                print("Local Path:", path_dict.get("local_path"))
-
     def video_to_images(self, input_video_dir, output_folder):
-        print('starting')
+        print('Converting published video to image sequence for Nuke.')
         parts = os.path.normpath(output_folder).split(os.sep)
         output_name = '_'.join([parts[-7], parts[-5], parts[-4], parts[-3], parts[-1]])
         output_folder = input_video_dir.replace('output', 'input')
@@ -104,8 +67,9 @@ class SGIO:
         self.output_images = os.path.join(output_folder, (output_name + ".####.jpg"))
         output_folder_dir = os.path.join(output_folder, (output_name+ ".%04d.jpg"))
         output_folder_check = os.path.join(output_folder, (output_name + ".1001.jpg"))
+
         if not os.path.exists(output_folder_check):
-            print('converting images')
+            print('Processing')
 
             cmd = [
                 "ffmpeg",
@@ -117,8 +81,30 @@ class SGIO:
 
             try:
                 subprocess.run(cmd, check=True)
+                print('Video successfully converted!')
             except subprocess.CalledProcessError as e:
-                print('wrong')
+                print('Something went wrong while trying to convert the video into image sequence.')
+
+    def images_to_video(self, input_images_dir, output_file):
+        print('Converting image sequence to published video for ShotGrid.')
+        input_images_dir = r"C:\Users\matsv\Desktop\VfxSem2\Portfolio\CompBuilder\Shotgrid Connect\shots\ts0020\0010\comp\output\v001\comp_out_v001.%04d.exr"
+        output = r"C:\Users\matsv\Desktop\VfxSem2\Portfolio\CompBuilder\Shotgrid Connect\shots\ts0020\0010\comp\publish\v001\out_video.mov"
+
+        cmd = [
+            "ffmpeg",
+            "-start_number", "1001",
+            "-i", input_images_dir,
+            "-vf", "fps=24",
+            output
+        ]
+
+        try:
+            print('Processing')
+            subprocess.run(cmd, check=True)
+            print('Image Sequence successfully converted!')
+        except subprocess.CalledProcessError as e:
+            print('Something went wrong while trying to convert the image sequence into a video.')
+
 
 class StandardItem(QStandardItem):
     def __init__(self, txt='', font_size=12, set_bold=False, color=QColor(0, 0, 0)):
@@ -132,10 +118,10 @@ class StandardItem(QStandardItem):
         self.setFont(fnt)
         self.setText(txt)
 
+
 class MainWindow(QMainWindow):
     def __init__(self, sgio):
         super().__init__()
-        print('wefwfw')
         self.setWindowTitle("ShotGrid Task Tree")
         self.resize(600, 400)
         self.tree = QTreeView()
@@ -150,7 +136,6 @@ class MainWindow(QMainWindow):
 
         # Add widgets to the layout
         layout.addWidget(QLabel("Project Status:"))
-        print(self.tree, 'tree')
         layout.addWidget(self.tree)
         layout.addWidget(self.in_progress_button)
         layout.addWidget(self.publish_button)
@@ -161,18 +146,16 @@ class MainWindow(QMainWindow):
         # Get tasks from ShotGrid
         self.io_instance = sgio
         self.data = self.io_instance.get_tasks()
+
         # Build the tree model
         model = self.build_tree(self.data)
         self.tree.setModel(model)
         self.tree.expandAll()
 
 
-        print('init done')
-
-
     def build_tree(self, tasks):
+        print('Started building tree/')
         model = QStandardItemModel()
-        # model.setHorizontalHeaderLabels(['Project', 'Sequence', 'Shot', 'Task'])
         root = model.invisibleRootItem()
 
         tasks_sorted = sorted(
@@ -247,7 +230,7 @@ class MainWindow(QMainWindow):
 
         self.tree.doubleClicked.connect(self.get_value)
 
-        print(model)
+        print('Tree has been build.')
 
         return model
 
@@ -259,14 +242,17 @@ class MainWindow(QMainWindow):
     def task_in_progress(self):
         index = self.tree.currentIndex()
         item = self.tree.model().itemFromIndex(index)
+
         if item is None:
             print("No item selected!")
             return
         task_id = item.data(Qt.UserRole + 1)
+
         if not task_id:
             print("No Task ID found for selected item!")
             return
         set_task_status(task_id, 'ip')
+        print('Changed status of task to In Progress.')
 
     def task_publish(self):
         index = self.tree.currentIndex()
@@ -278,7 +264,26 @@ class MainWindow(QMainWindow):
         if not task_id:
             print("No Task ID found for selected item!")
             return
-        set_task_status(task_id, 'pbl')
+        self.io_instance.images_to_video('wfew', 'wefs')
+        self.video_file = r"C:\Users\matsv\Desktop\VfxSem2\Portfolio\CompBuilder\Shotgrid Connect\shots\ts0020\0010\comp\publish\v001\out_video.mov"
+        self.publish_video(self.video_file)
+
+        set_task_status(task_id, 'rvi')
+        print('Changed status of task to Review Internal.')
+
+    def publish_video(self, video_file):
+        data = {
+            "project": {"type": "Project", "id": 353},
+            "code": "v001",
+            "description": "Auto-published from script",
+            "entity": {"type": "Task", "id": 15265},
+            "user": {"type": "HumanUser", "id": RETRIEVED_USER_ID},
+        }
+
+        version = SG.create("Version", data)
+
+        print('Publishing file.')
+        SG.upload("Version", version["id"], video_file, field_name="sg_uploaded_movie")
 
     def get_value(self, index):
         item = self.tree.model().itemFromIndex(index)
@@ -288,21 +293,14 @@ class MainWindow(QMainWindow):
 
         file_location = item.data(Qt.UserRole)
 
-
         output_location = FILE_FOLDER_LOCATION + r"\Shotgrid Connect\shots\ts0020\0010\comp\input\v001\\"
         # output_location = file_location.replace("input", "output")
-        print(output_location)
-        print('hey')
         self.io_instance.video_to_images(file_location, output_location)
-        print('started comp making', self.io_instance.output_images)
-        create_comp(self.io_instance.output_images, task_id)
-
-        # print(val.data())
-        # print(val.row(), val.column())
+        create_comp(self.io_instance.output_images)
 
 
 def create_comp(input_images):
-    print('making comp')
+    print('Creating Comp...')
     name = FILE_FOLDER_LOCATION + r"C:\Shotgrid Connect\shots\ts0020\0010\comp\work\v001\comp_v001.nkc"
     if not os.path.exists(name):
         nuke.scriptSaveAs()
@@ -331,18 +329,20 @@ def create_comp(input_images):
 
     read["first"].setValue("1001")
     read["last"].setValue(f"{video_length}")
-    # write["colorspace"].setValue(("Output - sRGB"))
+    write["colorspace"].setValue(("Output - sRGB"))
 
     nuke.root()["first_frame"].setValue(1001)
     nuke.root()["last_frame"].setValue(video_length)
 
     write.setInput(0, read)
 
-    set_task_status
+    print('Created Comp.')
+
 
 def set_task_status(task_id, new_status):
+    print('setting task status')
     try:
-        SG.update("Task", task_id, {"sg_status_list": new_status})
+        SG.update("Task", 15265, {"sg_status_list": new_status})
         print(f"Task {task_id} status updated to {new_status}")
     except Exception as e:
         print(f"Failed to update status for Task {task_id}: {e}")
