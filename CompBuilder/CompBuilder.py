@@ -124,17 +124,18 @@ class SGIO:
         except Exception as e:
             print(f"Failed to update status for Task {task_id}: {e}")
 
-    def publish_video(self, video_file, task_id):
+    def publish_video(self, video_file, proj_id, shot_id, task_id):
         """Publish video to ShotGrid"""
         if not os.path.exists(video_file):
             print(f"Video file not found: {video_file}")
             return None
 
         data = {
-            "project": {"type": "Project", "id": 353},
+            "project": {"type": "Project", "id": proj_id},
             "code": "v001",
-            "description": "Auto-published from script",
-            "entity": {"type": "Task", "id": task_id},
+            "description": f"Auto-published from script by user: {RETRIEVED_USER_ID}",
+            "entity": {"type": "Shot", "id": shot_id},
+            "sg_task": {"type": "Task", "id": task_id},
             "user": {"type": "HumanUser", "id": RETRIEVED_USER_ID},
         }
 
@@ -162,6 +163,7 @@ class PipelineFileManager:
     def get_data(self):
         """Get current selection data from tree"""
         if not self.tree:
+            print('no tree')
             return
 
         index = self.tree.currentIndex()
@@ -171,6 +173,7 @@ class PipelineFileManager:
             self.proj = item.data(Qt.UserRole)
             self.seq = item.data(Qt.UserRole + 1)
             self.shot = item.data(Qt.UserRole + 2)
+            print('set all data')
 
     def get_shot_dir(self):
         """Get base shot directory"""
@@ -233,12 +236,7 @@ class PipelineFileManager:
             print("Cannot create filename - missing project data")
             return None
 
-        # Clean up names for filename
-        proj_clean = self.proj.replace(' ', '')
-        seq_clean = self.seq.replace(' ', '')
-        shot_clean = self.shot.replace(' ', '')
-
-        base_name = f"{proj_clean}_{seq_clean}_{shot_clean}_{task}_{version}"
+        base_name = f"{self.proj}_{self.seq}_{self.shot}_{task}_{version}"
 
         if extension:
             return f"{base_name}.{extension}"
@@ -297,9 +295,10 @@ class PipelineFileManager:
             return None
 
         comp_output_dir = os.path.join(shot_dir, "comp", "output")
+        comp_work_dir = os.path.join(shot_dir, "comp", "work")
 
         # Get next version for new output
-        next_version = self.get_next_version(comp_output_dir)
+        next_version = self.get_latest_version(comp_work_dir)
         output_dir = os.path.join(comp_output_dir, next_version)
 
         # Create directory if it doesn't exist
@@ -314,7 +313,7 @@ class PipelineFileManager:
             # Python/FFmpeg format: filename.%04d.exr
             return os.path.join(output_dir, f"{base_name}.%04d.exr")
 
-    def get_nuke_script_path(self, version=None):
+    def get_nuke_script_path(self, new=False):
         """Get Nuke script path"""
         shot_dir = self.get_shot_dir()
         if not shot_dir:
@@ -322,14 +321,18 @@ class PipelineFileManager:
 
         work_dir = os.path.join(shot_dir, "comp", "work")
 
-        if version is None:
-            # Get next version for new script
+
+        if new is False:
+            version = self.get_latest_version(work_dir)
+            print('latest v: ', version)
+        else:
             version = self.get_next_version(work_dir)
 
         script_dir = os.path.join(work_dir, version)
-        os.makedirs(script_dir, exist_ok=True)
+        if new:
+            os.makedirs(script_dir, exist_ok=True)
 
-        filename = self.make_filename("comp", version, "nk")
+        filename = self.make_filename("comp", version, "nknc")
         return os.path.join(script_dir, filename)
 
     def get_publish_script_path(self):
@@ -348,7 +351,7 @@ class PipelineFileManager:
         publish_dir = os.path.join(shot_dir, "comp", "publish", current_version)
         os.makedirs(publish_dir, exist_ok=True)
 
-        filename = self.make_filename("comp", current_version, "nk")
+        filename = self.make_filename("comp", current_version, "nknc")
         return os.path.join(publish_dir, filename)
 
     def get_publish_video_path(self):
@@ -525,27 +528,30 @@ class MainWindow(QMainWindow):
             print("No item selected!")
             return
 
+        proj_id = item.data(Qt.UserRole)
+        seq_id = item.data(Qt.UserRole + 1)
+        shot_id = item.data(Qt.UserRole + 2)
         task_id = item.data(Qt.UserRole + 3)
         if not task_id:
             print("No Task ID found for selected item!")
             return
 
         # Get current comp output and convert to video
-        comp_output_path = self.pfm.get_comp_output_path()
+        comp_output_path = self.pfm.get_comp_input_path(False)
         publish_video_path = self.pfm.get_publish_video_path()
 
         if not comp_output_path or not publish_video_path:
             print("Could not determine comp output or publish video paths")
             return
 
-        self.nuke_instance.render()
+        self.nuke_instance.render(self.tree)
 
         # Convert images to video
         video_file = self.io_instance.images_to_video(comp_output_path, publish_video_path)
 
         if video_file and os.path.exists(video_file):
             # Publish to ShotGrid
-            self.io_instance.publish_video(video_file, task_id)
+            self.io_instance.publish_video(video_file, proj_id, shot_id, task_id)
             self.io_instance.set_task_status(task_id, 'rvi')
             print('Changed status of task to Review Internal.')
         else:
@@ -553,41 +559,40 @@ class MainWindow(QMainWindow):
 
     def build_comp(self, index):
         """Build composition when shot is double-clicked"""
-        item = self.tree.model().itemFromIndex(index)
-        if item is None:
-            print("No item found for index!")
-            return
-
-        # Get source video and convert to images
-        source_video_path = self.pfm.get_source_video_path()
-        comp_input_path = self.pfm.get_comp_input_path()
-
-        if not source_video_path:
-            print("Source video not found")
-            return
-
-        if not comp_input_path:
-            print("Could not determine comp input path")
-            return
-
-        # Convert video to images
-        image_sequence = self.io_instance.video_to_images(source_video_path, comp_input_path)
-
-        if not image_sequence:
-            print("Failed to convert video to images")
-            return
-
-        # Create or open Nuke script
-        nuke_script_path = self.pfm.get_nuke_script_path()
-        if not nuke_script_path:
-            print("Could not determine Nuke script path")
-            return
-
-        if not os.path.exists(nuke_script_path):
-            self.nuke_instance.create_comp(image_sequence)
-        else:
-            print(f"Opening existing script: {nuke_script_path}")
+        nuke_script_path = self.pfm.get_nuke_script_path(new=False)
+        print('path is', nuke_script_path)
+        if os.path.exists(nuke_script_path):
             nuke.scriptOpen(nuke_script_path)
+            return
+        else:
+            print('making comp')
+            item = self.tree.model().itemFromIndex(index)
+            if item is None:
+                print("No item found for index!")
+                return
+
+            # Get source video and convert to images
+            source_video_path = self.pfm.get_source_video_path()
+            comp_input_path = self.pfm.get_comp_input_path(for_nuke=False)
+
+            if not source_video_path:
+                print("Source video not found")
+                return
+
+            if not comp_input_path:
+                print("Could not determine comp input path")
+                return
+
+            # Convert video to images
+            image_sequence = self.io_instance.video_to_images(source_video_path, comp_input_path)
+
+            if not image_sequence:
+                print("Failed to convert video to images")
+                return
+
+            nuke_script_path = self.pfm.get_nuke_script_path(new=True)
+            self.nuke_instance.create_comp(image_sequence, self.tree, nuke_script_path)
+
 
 class NukeHandler():
     def __init__(self):
@@ -595,48 +600,47 @@ class NukeHandler():
         self.write = None
         self.pfm_instance = PipelineFileManager()
 
-        script_path = self.pfm_instance.get_nuke_script_path()
-        if not script_path:
-            print("Could not determine script path")
-            return
 
-        nuke.scriptSaveAs(script_path)
-
-    def create_comp(self, input_images):
+    def create_comp(self, input_images, tree, script_name):
         """Create new Nuke composition"""
         print('Creating Comp...')
+        nuke.root()['colorManagement'].setValue('OCIO')
 
         try:
             # Create Read node
             self.read = nuke.nodes.Read(file=input_images.replace('\\', '/'))
-            self.read["colorspace"].setValue("Output - sRGB")
+            # self.read["colorspace"].setValue('ACES - ACEScg')
+            self.read["colorspace"].setValue('Output - sRGB')
 
             # Create Write node
+            self.pfm_instance.tree = tree
+            self.pfm_instance.get_data()
             output_path = self.pfm_instance.get_comp_output_path(for_nuke=True)
             if not output_path:
                 print("Could not determine output path")
                 return
 
             self.write = nuke.nodes.Write(file=output_path.replace('\\', '/'))
-            self.write["colorspace"].setValue("Output - sRGB")
+            self.write["colorspace"].setValue('Output - sRGB')
 
             # Connect nodes
             self.write.setInput(0, self.read)
 
-            # Set frame range
             dir_path = os.path.dirname(input_images)
             base_name = os.path.basename(input_images)
 
-            # Count frames in sequence
             if os.path.exists(dir_path):
                 # Replace %04d with regex for 4 digits
-                pattern = re.sub(r'%04d', r'\\d{4}', base_name)
+                pattern = re.sub(r'%04d', r'(\\d{4})', base_name)
                 regex = re.compile('^' + pattern + '$')
-                file_count = len([f for f in os.listdir(dir_path) if regex.match(f)])
-
-                if file_count > 0:
-                    first_frame = 1001
-                    last_frame = 1000 + file_count
+                frames = []
+                for f in os.listdir(dir_path):
+                    m = regex.match(f)
+                    if m:
+                        frames.append(int(m.group(1)))
+                if frames:
+                    first_frame = min(frames)
+                    last_frame = max(frames)
 
                     self.read["first"].setValue(first_frame)
                     self.read["last"].setValue(last_frame)
@@ -647,12 +651,15 @@ class NukeHandler():
                 else:
                     print("No matching image files found")
 
+            nuke.scriptSaveAs(script_name)
             print('Comp created successfully.')
 
         except Exception as e:
             print(f"Error creating Nuke composition: {e}")
 
-    def render(self):
+    def render(self, tree):
+        self.pfm_instance.tree = tree
+        self.pfm_instance.get_data()
         if self.write is not None:
             output_path = self.pfm_instance.get_comp_output_path(for_nuke=True)
             if not output_path:
