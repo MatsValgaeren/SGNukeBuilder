@@ -1,40 +1,34 @@
 import nuke
 import os
 import re
-import sgtk
 import sys
-import requests
 import subprocess
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication, QWidget, QMainWindow, QTreeView, QPushButton, QAbstractItemView, QLabel, QVBoxLayout, QPushButton
+from PySide6.QtWidgets import QApplication, QWidget, QMainWindow, QTreeView, QPushButton, QAbstractItemView, QLabel, \
+    QVBoxLayout, QPushButton
 from PySide6.QtGui import QStandardItem, QStandardItemModel, QFont, QColor
 
 from shotgun_api3.shotgun import Shotgun
-from .config import SERVER_PATH, LOGIN, PASSWORD, FILE_FOLDER_LOCATION
+from .config import SERVER_PATH, LOGIN, PASSWORD, PROJECT_FOLDER_LOCATION
 
-
-RETRIEVED_USER_ID = os.getenv("USER_ID")
+RETRIEVED_USER_ID = int(os.getenv("USER_ID"))
 if not RETRIEVED_USER_ID:
     print("USER_ID environment variable is not set")
+print('ID: ', RETRIEVED_USER_ID)
 
 SG = Shotgun(
     SERVER_PATH,
-    login = LOGIN,
-    password= PASSWORD
+    login=LOGIN,
+    password=PASSWORD
 )
 
 my_window = None
 
-# nuke.knobdefault('root.colormanagement', 'ocio')
-# nuke.knobdefault('root.ocio_config', 'custom')
-# defaultconfig = os.environ.get('ocio', '/path/to/default_facility_config.ocio')
-# nuke.knobdefault('root.customocioconfigpath', defaultconfig)
 
 class SGIO:
     def __init__(self, sg_api, user_id):
         self.sg = sg_api
-        self.output_images = ''
         self.user_id = user_id
         self.can_work_on = ['rdy', 'rti', 'ip', 'att']
 
@@ -58,52 +52,342 @@ class SGIO:
             print(f"Error fetching tasks: {e}")
             return []
 
-    def video_to_images(self, input_video_dir, output_folder):
+    def video_to_images(self, input_video_path, output_image_path):
+        """Convert video to image sequence"""
         print('Converting published video to image sequence for Nuke.')
-        parts = os.path.normpath(output_folder).split(os.sep)
-        output_name = '_'.join([parts[-7], parts[-5], parts[-4], parts[-3], parts[-1]])
-        output_folder = input_video_dir.replace('output', 'input')
-        output_folder = output_folder.replace('source', 'comp')
-        self.output_images = os.path.join(output_folder, (output_name + ".####.jpg"))
-        output_folder_dir = os.path.join(output_folder, (output_name+ ".%04d.jpg"))
-        output_folder_check = os.path.join(output_folder, (output_name + ".1001.jpg"))
 
-        if not os.path.exists(output_folder_check):
-            print('Processing')
+        # Create output directory if it doesn't exist
+        output_dir = os.path.dirname(output_image_path)
+        os.makedirs(output_dir, exist_ok=True)
 
-            cmd = [
-                "ffmpeg",
-                "-i", input_video_dir + r"connect_ts0020_0010_source_v001.mov",
-                "-vf", "fps=24",
-                "-start_number", "1001",
-                output_folder_dir
-            ]
+        # Check if conversion already exists
+        first_frame_path = output_image_path.replace('%04d', '1001')
+        if os.path.exists(first_frame_path):
+            print(f'Image sequence already exists: {first_frame_path}')
+            return output_image_path
 
-            try:
-                subprocess.run(cmd, check=True)
-                print('Video successfully converted!')
-            except subprocess.CalledProcessError as e:
-                print('Something went wrong while trying to convert the video into image sequence.')
+        if not os.path.exists(input_video_path):
+            print(f'Source video not found: {input_video_path}')
+            return None
 
-    def images_to_video(self, input_images_dir, output_file):
+        cmd = [
+            "ffmpeg",
+            "-i", input_video_path,
+            "-vf", "fps=24",
+            "-start_number", "1001",
+
+            "-threads", "0",
+
+            output_image_path
+        ]
+
+        try:
+            print('Processing video conversion...')
+            subprocess.run(cmd, check=True)
+            print('Video successfully converted!')
+            return output_image_path
+        except subprocess.CalledProcessError as e:
+            print(f'Error converting video to images: {e}')
+            return None
+
+    def images_to_video(self, input_images_path, output_video_path):
+        """Convert image sequence to video"""
         print('Converting image sequence to published video for ShotGrid.')
-        input_images_dir = r"C:\Users\matsv\Desktop\VfxSem2\Portfolio\CompBuilder\Shotgrid Connect\shots\ts0020\0010\comp\output\v001\comp_out_v001.%04d.exr"
-        output = r"C:\Users\matsv\Desktop\VfxSem2\Portfolio\CompBuilder\Shotgrid Connect\shots\ts0020\0010\comp\publish\v001\out_video.mov"
+
+        # Create output directory if it doesn't exist
+        os.makedirs(os.path.dirname(output_video_path), exist_ok=True)
 
         cmd = [
             "ffmpeg",
             "-start_number", "1001",
-            "-i", input_images_dir,
+            "-i", input_images_path,
             "-vf", "fps=24",
-            output
+            "-y",  # Overwrite output file
+            output_video_path
         ]
 
         try:
-            print('Processing')
+            print('Processing image sequence to video conversion...')
             subprocess.run(cmd, check=True)
-            print('Image Sequence successfully converted!')
+            print('Image sequence successfully converted to video!')
+            return output_video_path
         except subprocess.CalledProcessError as e:
-            print('Something went wrong while trying to convert the image sequence into a video.')
+            print(f'Error converting images to video: {e}')
+            return None
+
+    def set_task_status(self, task_id, new_status):
+        """Update task status in ShotGrid"""
+        print(f'Setting task {task_id} status to {new_status}')
+        try:
+            self.sg.update("Task", task_id, {"sg_status_list": new_status})
+            print(f"Task {task_id} status updated to {new_status}")
+        except Exception as e:
+            print(f"Failed to update status for Task {task_id}: {e}")
+
+    def publish_video(self, video_file, task_id):
+        """Publish video to ShotGrid"""
+        if not os.path.exists(video_file):
+            print(f"Video file not found: {video_file}")
+            return None
+
+        data = {
+            "project": {"type": "Project", "id": 353},
+            "code": "v001",
+            "description": "Auto-published from script",
+            "entity": {"type": "Task", "id": task_id},
+            "user": {"type": "HumanUser", "id": RETRIEVED_USER_ID},
+        }
+
+        try:
+            version = self.sg.create("Version", data)
+            print('Publishing file to ShotGrid...')
+            self.sg.upload("Version", version["id"], video_file, field_name="sg_uploaded_movie")
+            print('File successfully published!')
+            return version
+        except Exception as e:
+            print(f"Error publishing video: {e}")
+            return None
+
+
+class PipelineFileManager:
+    """Unified file path manager with consistent naming conventions"""
+
+    def __init__(self, base_path=None, tree=None):
+        self.proj_path = base_path or PROJECT_FOLDER_LOCATION
+        self.tree = tree
+        self.proj = None
+        self.seq = None
+        self.shot = None
+
+    def get_data(self):
+        """Get current selection data from tree"""
+        if not self.tree:
+            return
+
+        index = self.tree.currentIndex()
+        item = self.tree.model().itemFromIndex(index)
+        print(index, item)
+        if item:
+            self.proj = item.data(Qt.UserRole)
+            self.seq = item.data(Qt.UserRole + 1)
+            self.shot = item.data(Qt.UserRole + 2)
+
+    def get_shot_dir(self):
+        """Get base shot directory"""
+        if not all([self.proj, self.seq, self.shot]):
+            self.get_data()
+
+        print([self.proj, self.seq, self.shot])
+        if not all([self.proj, self.seq, self.shot]):
+            print("Missing project, sequence, or shot data")
+            return None
+
+        base = os.path.join(
+            self.proj_path,
+            self.proj,
+            "shots",
+            self.seq,
+            self.shot.split('_')[-1]
+        )
+
+        return base
+
+    def get_latest_version(self, folder_path):
+        """Get latest version folder (v001, v002, etc.)"""
+        if not os.path.exists(folder_path):
+            print(f"Path not found: {folder_path}")
+            return None
+
+        try:
+            all_dirs = [
+                d for d in os.listdir(folder_path)
+                if os.path.isdir(os.path.join(folder_path, d)) and re.match(r'v\d{3}', d)
+            ]
+
+            if all_dirs:
+                versions = [int(re.search(r'v(\d{3})', d).group(1)) for d in all_dirs]
+                max_version = max(versions)
+                return f"v{max_version:03d}"
+            else:
+                print(f"No version folders found in: {folder_path}")
+                return None
+        except Exception as e:
+            print(f"Error getting latest version: {e}")
+            return None
+
+    def get_next_version(self, folder_path):
+        """Get next version number"""
+        latest = self.get_latest_version(folder_path)
+        if latest is None:
+            return "v001"
+
+        version_num = int(re.search(r'v(\d{3})', latest).group(1))
+        return f"v{version_num + 1:03d}"
+
+    def make_filename(self, task, version, extension=""):
+        """Create standardized filename: proj_seq_shot_task_version.ext"""
+        if not all([self.proj, self.seq, self.shot]):
+            self.get_data()
+
+        if not all([self.proj, self.seq, self.shot]):
+            print("Cannot create filename - missing project data")
+            return None
+
+        # Clean up names for filename
+        proj_clean = self.proj.replace(' ', '')
+        seq_clean = self.seq.replace(' ', '')
+        shot_clean = self.shot.replace(' ', '')
+
+        base_name = f"{proj_clean}_{seq_clean}_{shot_clean}_{task}_{version}"
+
+        if extension:
+            return f"{base_name}.{extension}"
+        return base_name
+
+    def get_source_video_path(self):
+        """Get source video file path"""
+        shot_dir = self.get_shot_dir()
+        if not shot_dir:
+            return None
+
+        source_dir = os.path.join(shot_dir, "source", "output")
+        latest_version = self.get_latest_version(source_dir)
+
+        if not latest_version:
+            print("No source video version found")
+            return None
+
+        video_filename = self.make_filename("source", latest_version, "mov")
+        video_path = os.path.join(source_dir, latest_version, video_filename)
+
+        if os.path.exists(video_path):
+            return video_path
+        else:
+            print(f"Source video not found: {video_path}")
+            return None
+
+    def get_comp_input_path(self, for_nuke=False):
+        """Get comp input image sequence path"""
+        shot_dir = self.get_shot_dir()
+        if not shot_dir:
+            return None
+
+        # Use same version as source
+        source_dir = os.path.join(shot_dir, "source", "output")
+        source_version = self.get_latest_version(source_dir)
+
+        if not source_version:
+            print("No source version found for comp input")
+            return None
+
+        comp_input_dir = os.path.join(shot_dir, "comp", "input", source_version)
+        base_name = self.make_filename("source", source_version)
+
+        if for_nuke:
+            # Nuke format: filename.####.exr
+            return os.path.join(comp_input_dir, f"{base_name}.####.exr")
+        else:
+            # Python/FFmpeg format: filename.%04d.exr
+            return os.path.join(comp_input_dir, f"{base_name}.%04d.exr")
+
+    def get_comp_output_path(self, for_nuke=False):
+        """Get comp output image sequence path"""
+        shot_dir = self.get_shot_dir()
+        if not shot_dir:
+            return None
+
+        comp_output_dir = os.path.join(shot_dir, "comp", "output")
+
+        # Get next version for new output
+        next_version = self.get_next_version(comp_output_dir)
+        output_dir = os.path.join(comp_output_dir, next_version)
+
+        # Create directory if it doesn't exist
+        os.makedirs(output_dir, exist_ok=True)
+
+        base_name = self.make_filename("comp", next_version)
+
+        if for_nuke:
+            # Nuke format: filename.####.exr
+            return os.path.join(output_dir, f"{base_name}.####.exr")
+        else:
+            # Python/FFmpeg format: filename.%04d.exr
+            return os.path.join(output_dir, f"{base_name}.%04d.exr")
+
+    def get_nuke_script_path(self, version=None):
+        """Get Nuke script path"""
+        shot_dir = self.get_shot_dir()
+        if not shot_dir:
+            return None
+
+        work_dir = os.path.join(shot_dir, "comp", "work")
+
+        if version is None:
+            # Get next version for new script
+            version = self.get_next_version(work_dir)
+
+        script_dir = os.path.join(work_dir, version)
+        os.makedirs(script_dir, exist_ok=True)
+
+        filename = self.make_filename("comp", version, "nk")
+        return os.path.join(script_dir, filename)
+
+    def get_publish_script_path(self):
+        """Get publish script path"""
+        shot_dir = self.get_shot_dir()
+        if not shot_dir:
+            return None
+
+        work_dir = os.path.join(shot_dir, "comp", "work")
+        current_version = self.get_latest_version(work_dir)
+
+        if not current_version:
+            print("No work version found for publish")
+            return None
+
+        publish_dir = os.path.join(shot_dir, "comp", "publish", current_version)
+        os.makedirs(publish_dir, exist_ok=True)
+
+        filename = self.make_filename("comp", current_version, "nk")
+        return os.path.join(publish_dir, filename)
+
+    def get_publish_video_path(self):
+        """Get publish video path"""
+        shot_dir = self.get_shot_dir()
+        if not shot_dir:
+            return None
+
+        comp_output_dir = os.path.join(shot_dir, "comp", "output")
+        latest_comp_version = self.get_latest_version(comp_output_dir)
+
+        if not latest_comp_version:
+            print("No comp output version found for publish")
+            return None
+
+        publish_dir = os.path.join(shot_dir, "comp", "publish", latest_comp_version)
+        os.makedirs(publish_dir, exist_ok=True)
+
+        filename = self.make_filename("comp", latest_comp_version, "mov")
+        return os.path.join(publish_dir, filename)
+
+    def get_all_paths(self):
+        """Get all paths for current shot - useful for debugging"""
+        if not all([self.proj, self.seq, self.shot]):
+            self.get_data()
+
+        paths = {
+            'shot_dir': self.get_shot_dir(),
+            'source_video': self.get_source_video_path(),
+            'comp_input_python': self.get_comp_input_path(for_nuke=False),
+            'comp_input_nuke': self.get_comp_input_path(for_nuke=True),
+            'comp_output_python': self.get_comp_output_path(for_nuke=False),
+            'comp_output_nuke': self.get_comp_output_path(for_nuke=True),
+            'nuke_script': self.get_nuke_script_path(),
+            'publish_script': self.get_publish_script_path(),
+            'publish_video': self.get_publish_video_path()
+        }
+
+        return paths
 
 
 class StandardItem(QStandardItem):
@@ -122,11 +406,18 @@ class StandardItem(QStandardItem):
 class MainWindow(QMainWindow):
     def __init__(self, sgio):
         super().__init__()
+        self.io_instance = sgio
+        self.nuke_instance = NukeHandler()
+        self.pfm = PipelineFileManager(tree=None)  # Will be set after tree creation
+
         self.setWindowTitle("ShotGrid Task Tree")
         self.resize(600, 400)
         self.tree = QTreeView()
         self.tree.header().hide()
         self.tree.setEditTriggers(QAbstractItemView.NoEditTriggers)
+
+        # Now set the tree reference in PipelineFileManager
+        self.pfm.tree = self.tree
 
         self.in_progress_button = self.add_button("In Progress", self.task_in_progress)
         self.publish_button = self.add_button("Publish", self.task_publish)
@@ -144,7 +435,6 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(self.main_widget)
 
         # Get tasks from ShotGrid
-        self.io_instance = sgio
         self.data = self.io_instance.get_tasks()
 
         # Build the tree model
@@ -152,9 +442,8 @@ class MainWindow(QMainWindow):
         self.tree.setModel(model)
         self.tree.expandAll()
 
-
     def build_tree(self, tasks):
-        print('Started building tree/')
+        print('Started building tree...')
         model = QStandardItemModel()
         root = model.invisibleRootItem()
 
@@ -170,68 +459,39 @@ class MainWindow(QMainWindow):
 
         project_items = {}
         for task in tasks_sorted:
-            proj = task["entity.Shot.project"]["name"]
-            seq = task["entity.Shot.sg_sequence"]["name"]
-            shot = task["entity.Shot.code"]
-            id = task["entity.Shot.id"]
-            # tsk = task["task"]
+            proj = task["entity.Shot.project"]["name"].replace(' ', '')
+            seq = task["entity.Shot.sg_sequence"]["name"].replace(' ', '')
+            shot = task["entity.Shot.code"].split('_')[-1].replace(' ', '')
+            task_id = task["entity.Shot.id"]
 
+            # Build project level
             if proj not in project_items:
                 project_item = QStandardItem(proj)
                 root.appendRow([project_item])
                 project_items[proj] = (project_item, {})
-            else:
-                project_item, seq_items = project_items[proj]
 
-            seq_items = project_items[proj][1]
+            project_item, seq_items = project_items[proj]
+
+            # Build sequence level
             if seq not in seq_items:
                 seq_item = QStandardItem(seq)
-
                 project_item.appendRow([seq_item])
                 seq_items[seq] = (seq_item, {})
-            else:
-                seq_item, shot_items = seq_items[seq]
 
-            shot_items = seq_items[seq][1]
+            seq_item, shot_items = seq_items[seq]
+
+            # Build shot level
             if shot not in shot_items:
                 shot_item = QStandardItem(shot)
-
-                version_file_location = os.path.join(
-                    FILE_FOLDER_LOCATION, project_item.text(), "shots", seq_item.text(), shot_item.text().split('_')[-1], "source", "output"
-                )
-
-                file_location = ''
-                print(version_file_location)
-                # List all directories in the version_file_location
-                try:
-                    all_dirs = [
-                        d for d in os.listdir(version_file_location)
-                        if os.path.isdir(os.path.join(version_file_location, d)) and re.match(r'v\d{3}', d)
-                    ]
-                except FileNotFoundError:
-                    print(f"Path not found: {version_file_location}")
-                    all_dirs = []
-
-                if all_dirs:
-                    versions = [int(re.search(r'v(\d{3})', d).group(1)) for d in all_dirs]
-                    max_version = max(versions)
-                    latest_folder = f"v{max_version:03d}"
-                    file_location = os.path.join(version_file_location, latest_folder, '')
-                    print(file_location)
-                else:
-                    print("No version folders found.")
-
-                shot_item.setData(file_location, Qt.UserRole)
-                shot_item.setData(id, Qt.UserRole + 1)
+                shot_item.setData(proj, Qt.UserRole)  # Store project
+                shot_item.setData(seq, Qt.UserRole + 1)  # Store sequence
+                shot_item.setData(shot, Qt.UserRole + 2)  # Store shot
+                shot_item.setData(task_id, Qt.UserRole + 3)  # Store task ID
                 seq_item.appendRow([shot_item])
                 shot_items[shot] = shot_item
-            else:
-                shot_item = shot_items[shot]
 
-        self.tree.doubleClicked.connect(self.get_value)
-
-        print('Tree has been build.')
-
+        self.tree.doubleClicked.connect(self.build_comp)
+        print('Tree has been built.')
         return model
 
     def add_button(self, label, action):
@@ -240,115 +500,180 @@ class MainWindow(QMainWindow):
         return button
 
     def task_in_progress(self):
+        """Set task status to In Progress"""
         index = self.tree.currentIndex()
         item = self.tree.model().itemFromIndex(index)
 
         if item is None:
             print("No item selected!")
             return
-        task_id = item.data(Qt.UserRole + 1)
 
+        task_id = item.data(Qt.UserRole + 3)
         if not task_id:
             print("No Task ID found for selected item!")
             return
-        set_task_status(task_id, 'ip')
+
+        self.io_instance.set_task_status(task_id, 'ip')
         print('Changed status of task to In Progress.')
 
     def task_publish(self):
+        """Publish task - render images to video and upload to ShotGrid"""
         index = self.tree.currentIndex()
         item = self.tree.model().itemFromIndex(index)
+
         if item is None:
             print("No item selected!")
             return
-        task_id = item.data(Qt.UserRole + 1)
+
+        task_id = item.data(Qt.UserRole + 3)
         if not task_id:
             print("No Task ID found for selected item!")
             return
-        self.io_instance.images_to_video('wfew', 'wefs')
-        self.video_file = r"C:\Users\matsv\Desktop\VfxSem2\Portfolio\CompBuilder\Shotgrid Connect\shots\ts0020\0010\comp\publish\v001\out_video.mov"
-        self.publish_video(self.video_file)
 
-        set_task_status(task_id, 'rvi')
-        print('Changed status of task to Review Internal.')
+        # Get current comp output and convert to video
+        comp_output_path = self.pfm.get_comp_output_path()
+        publish_video_path = self.pfm.get_publish_video_path()
 
-    def publish_video(self, video_file):
-        data = {
-            "project": {"type": "Project", "id": 353},
-            "code": "v001",
-            "description": "Auto-published from script",
-            "entity": {"type": "Task", "id": 15265},
-            "user": {"type": "HumanUser", "id": RETRIEVED_USER_ID},
-        }
+        if not comp_output_path or not publish_video_path:
+            print("Could not determine comp output or publish video paths")
+            return
 
-        version = SG.create("Version", data)
+        self.nuke_instance.render()
 
-        print('Publishing file.')
-        SG.upload("Version", version["id"], video_file, field_name="sg_uploaded_movie")
+        # Convert images to video
+        video_file = self.io_instance.images_to_video(comp_output_path, publish_video_path)
 
-    def get_value(self, index):
+        if video_file and os.path.exists(video_file):
+            # Publish to ShotGrid
+            self.io_instance.publish_video(video_file, task_id)
+            self.io_instance.set_task_status(task_id, 'rvi')
+            print('Changed status of task to Review Internal.')
+        else:
+            print("Failed to create video for publishing")
+
+    def build_comp(self, index):
+        """Build composition when shot is double-clicked"""
         item = self.tree.model().itemFromIndex(index)
         if item is None:
             print("No item found for index!")
             return
 
-        file_location = item.data(Qt.UserRole)
+        # Get source video and convert to images
+        source_video_path = self.pfm.get_source_video_path()
+        comp_input_path = self.pfm.get_comp_input_path()
 
-        output_location = FILE_FOLDER_LOCATION + r"\Shotgrid Connect\shots\ts0020\0010\comp\input\v001\\"
-        # output_location = file_location.replace("input", "output")
-        self.io_instance.video_to_images(file_location, output_location)
-        create_comp(self.io_instance.output_images)
+        if not source_video_path:
+            print("Source video not found")
+            return
 
+        if not comp_input_path:
+            print("Could not determine comp input path")
+            return
 
-def create_comp(input_images):
-    print('Creating Comp...')
-    name = FILE_FOLDER_LOCATION + r"C:\Shotgrid Connect\shots\ts0020\0010\comp\work\v001\comp_v001.nkc"
-    if not os.path.exists(name):
-        nuke.scriptSaveAs()
+        # Convert video to images
+        image_sequence = self.io_instance.video_to_images(source_video_path, comp_input_path)
 
-    try:
-        read = nuke.nodes.Read(file=input_images.replace('\\', '/'))
-        read["colorspace"].setValue("Output - sRGB")
-        read['reload'].execute()
-    except Exception as e:
-        print("Error creating Nuke Read node:", e)
+        if not image_sequence:
+            print("Failed to convert video to images")
+            return
 
-    write = nuke.nodes.Write(file="render/output.####.exr")
+        # Create or open Nuke script
+        nuke_script_path = self.pfm.get_nuke_script_path()
+        if not nuke_script_path:
+            print("Could not determine Nuke script path")
+            return
 
-    dir_path = os.path.dirname(input_images)
-    base_name = os.path.basename(input_images)
+        if not os.path.exists(nuke_script_path):
+            self.nuke_instance.create_comp(image_sequence)
+        else:
+            print(f"Opening existing script: {nuke_script_path}")
+            nuke.scriptOpen(nuke_script_path)
 
-    # Replace frame number with a wildcard regex
-    # Example: image.%04d.exr or image.0001.exr → image.\d+.exr
-    pattern = re.sub(r'\d+', r'\\d+', base_name)
-    regex = re.compile('^' + pattern + '$')
+class NukeHandler():
+    def __init__(self):
+        self.read = None
+        self.write = None
+        self.pfm_instance = PipelineFileManager()
 
-    # Count matching files
-    file_count = len([f for f in os.listdir(dir_path) if regex.match(f)])
-    print("Number of images in sequence:", file_count)
-    video_length = 1000 + file_count
+        script_path = self.pfm_instance.get_nuke_script_path()
+        if not script_path:
+            print("Could not determine script path")
+            return
 
-    read["first"].setValue("1001")
-    read["last"].setValue(f"{video_length}")
-    write["colorspace"].setValue(("Output - sRGB"))
+        nuke.scriptSaveAs(script_path)
 
-    nuke.root()["first_frame"].setValue(1001)
-    nuke.root()["last_frame"].setValue(video_length)
+    def create_comp(self, input_images):
+        """Create new Nuke composition"""
+        print('Creating Comp...')
 
-    write.setInput(0, read)
+        try:
+            # Create Read node
+            self.read = nuke.nodes.Read(file=input_images.replace('\\', '/'))
+            self.read["colorspace"].setValue("Output - sRGB")
 
-    print('Created Comp.')
+            # Create Write node
+            output_path = self.pfm_instance.get_comp_output_path(for_nuke=True)
+            if not output_path:
+                print("Could not determine output path")
+                return
 
+            self.write = nuke.nodes.Write(file=output_path.replace('\\', '/'))
+            self.write["colorspace"].setValue("Output - sRGB")
 
-def set_task_status(task_id, new_status):
-    print('setting task status')
-    try:
-        SG.update("Task", 15265, {"sg_status_list": new_status})
-        print(f"Task {task_id} status updated to {new_status}")
-    except Exception as e:
-        print(f"Failed to update status for Task {task_id}: {e}")
+            # Connect nodes
+            self.write.setInput(0, self.read)
+
+            # Set frame range
+            dir_path = os.path.dirname(input_images)
+            base_name = os.path.basename(input_images)
+
+            # Count frames in sequence
+            if os.path.exists(dir_path):
+                # Replace %04d with regex for 4 digits
+                pattern = re.sub(r'%04d', r'\\d{4}', base_name)
+                regex = re.compile('^' + pattern + '$')
+                file_count = len([f for f in os.listdir(dir_path) if regex.match(f)])
+
+                if file_count > 0:
+                    first_frame = 1001
+                    last_frame = 1000 + file_count
+
+                    self.read["first"].setValue(first_frame)
+                    self.read["last"].setValue(last_frame)
+                    nuke.root()["first_frame"].setValue(first_frame)
+                    nuke.root()["last_frame"].setValue(last_frame)
+
+                    print(f"Set frame range: {first_frame} - {last_frame}")
+                else:
+                    print("No matching image files found")
+
+            print('Comp created successfully.')
+
+        except Exception as e:
+            print(f"Error creating Nuke composition: {e}")
+
+    def render(self):
+        if self.write is not None:
+            output_path = self.pfm_instance.get_comp_output_path(for_nuke=True)
+            if not output_path:
+                print("Could not determine output path")
+                return
+
+            self.write = nuke.nodes.Write(file=output_path.replace('\\', '/'))
+
+            output_dir = os.path.dirname(self.write["file"].value())
+            if not os.path.exists(output_dir):
+                os.makedirs(output_dir)
+
+            first_frame = int(nuke.root()["first_frame"].value())
+            last_frame = int(nuke.root()["last_frame"].value())
+            nuke.render(self.write, first_frame, last_frame)
+        else:
+            print("Write node not set. Cannot render.")
 
 
 def run():
+    """Main entry point"""
     try:
         global my_window
         app = QApplication.instance()
@@ -359,5 +684,3 @@ def run():
         import traceback
         print("Exception in run():", e)
         traceback.print_exc()
-
-
