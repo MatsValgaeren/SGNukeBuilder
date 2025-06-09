@@ -15,7 +15,7 @@
 - [Features](#features)
 - [Installation](#installation)
   - [Requirements](#requirements)
-  - [Maya Scipt Setup](#maya-scipt-setup)
+  - [Nuke Script Setup](#nuke-script-setup)
 - [Usage](#usage)
 - [Roadmap & Contributing](#roadmap--contributing)
 - [Credits](#credits)
