@@ -2,6 +2,7 @@ import nuke
 import os
 import re
 import sys
+import json
 import subprocess
 
 from PySide6.QtCore import Qt
@@ -50,6 +51,7 @@ class SGIO:
         try:
             tasks = self.sg.find('Task', filters, fields)
             print(f"Retrieved {len(tasks)} tasks for user {self.user_id}")
+            print(tasks)
             return tasks
         except Exception as e:
             print(f"Error fetching tasks: {e}")
@@ -118,6 +120,26 @@ class SGIO:
             print(f'Error converting images to video: {e}')
             return None
 
+    def get_video_metadata(self, video_path):
+        """Extracts resolution and fps from a video file using ffprobe."""
+        cmd = [
+            "ffprobe",
+            "-v", "error",
+            "-select_streams", "v:0",
+            "-show_entries", "stream=width,height,r_frame_rate",
+            "-of", "json",
+            video_path
+        ]
+        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        info = json.loads(result.stdout)
+        stream = info['streams'][0]
+        width = stream['width']
+        height = stream['height']
+        # r_frame_rate is a string like "24/1"
+        fps_parts = stream['r_frame_rate'].split('/')
+        fps = float(fps_parts[0]) / float(fps_parts[1])
+        return width, height, fps
+
     def set_task_status(self, task_id, new_status):
         """Update task status in ShotGrid"""
         print(f'Setting task {task_id} status to {new_status}')
@@ -134,12 +156,12 @@ class SGIO:
             return None
 
         data = {
-            "project": {"type": "Project", "id": proj_id},
+            "project": {"type": "Project", "id": int(proj_id)},
             "code": version,
-            "description": f"Auto-published from script by user: {RETRIEVED_USER_ID}",
-            "entity": {"type": "Shot", "id": shot_id},
-            "sg_task": {"type": "Task", "id": task_id},
-            "user": {"type": "HumanUser", "id": RETRIEVED_USER_ID},
+            "description": f"Auto-published from script by user: {int(RETRIEVED_USER_ID)}",
+            "entity": {"type": "Shot", "id": int(shot_id)},
+            "sg_task": {"type": "Task", "id": int(task_id)},
+            "user": {"type": "HumanUser", "id": int(RETRIEVED_USER_ID)},
         }
 
         try:
@@ -431,8 +453,11 @@ class MainWindow(QMainWindow):
         # Now set the tree reference in PipelineFileManager
         self.pfm.tree = self.tree
 
-        self.in_progress_button = self.add_button("In Progress", self.task_in_progress)
-        self.publish_button = self.add_button("Publish", self.task_publish)
+        # self.treebleClicked.connect(self.build_comp)
+        self.build_comp_button = self.add_button("Build/Open Comp", self.build_comp)
+        self.upversion_button = self.add_button("Write Up Version", self.upversion_passthrough)
+        self.in_progress_button = self.add_button("Put Task 'In Progress'", self.task_in_progress)
+        self.publish_button = self.add_button("Publish Video", self.task_publish)
 
         self.main_widget = QWidget()
         layout = QVBoxLayout(self.main_widget)
@@ -440,6 +465,8 @@ class MainWindow(QMainWindow):
         # Add widgets to the layout
         layout.addWidget(QLabel("Project Status:"))
         layout.addWidget(self.tree)
+        layout.addWidget(self.build_comp_button)
+        layout.addWidget(self.upversion_button)
         layout.addWidget(self.in_progress_button)
         layout.addWidget(self.publish_button)
 
@@ -453,6 +480,9 @@ class MainWindow(QMainWindow):
         model = self.build_tree(self.data)
         self.tree.setModel(model)
         self.tree.expandAll()
+
+    def upversion_passthrough(self):
+        self.nuke_instance.upversion_proj(self.tree)
 
     def build_tree(self, tasks):
         print('Started building tree...')
@@ -476,6 +506,7 @@ class MainWindow(QMainWindow):
             shot = task["entity.Shot.code"].split('_')[-1]
             task_id = task["id"]
             proj_id = task['entity.Shot.project.Project.id']
+            shot_id = task['entity.Shot.id']
 
             # Build project level
             if proj not in project_items:
@@ -501,10 +532,10 @@ class MainWindow(QMainWindow):
                 shot_item.setData(shot, Qt.UserRole + 2)  # Store shot
                 shot_item.setData(task_id, Qt.UserRole + 3)  # Store task ID
                 shot_item.setData(proj_id, Qt.UserRole + 4)
+                shot_item.setData(shot_id, Qt.UserRole + 5)
                 seq_item.appendRow([shot_item])
                 shot_items[shot] = shot_item
 
-        self.tree.doubleClicked.connect(self.build_comp)
         print('Tree has been built.')
         return model
 
@@ -540,7 +571,7 @@ class MainWindow(QMainWindow):
             return
 
         seq_id = item.data(Qt.UserRole + 1)
-        shot_id = item.data(Qt.UserRole + 2)
+        shot_id = item.data(Qt.UserRole + 5)
         task_id = item.data(Qt.UserRole + 3)
         proj_id = item.data(Qt.UserRole + 4)
         print('proj id', proj_id)
@@ -549,7 +580,7 @@ class MainWindow(QMainWindow):
             return
 
         # Get current comp output and convert to video
-        comp_output_path = self.pfm.get_comp_input_path(False)
+        comp_output_path = self.pfm.get_comp_output_path(False)
         publish_video_path = self.pfm.get_publish_video_path()
 
         if not comp_output_path or not publish_video_path:
@@ -566,13 +597,19 @@ class MainWindow(QMainWindow):
         if video_file and os.path.exists(video_file):
             # def publish_video(self, video_file, version, proj_id, shot_id, task_id):
             print(video_file, version, proj_id, shot_id, task_id)
-            self.io_instance.publish_video(video_file, version, proj_id, shot_id, task_id)
+            version  = self.io_instance.publish_video(video_file, version, proj_id, shot_id, task_id)
+            if version:
+                version_id = version["id"]
+                self.io_instance.sg.update("Version", version_id, {"sg_status_list": "rvi"})
+                print("Changed status of version to Review Internal.")
+
             self.io_instance.set_task_status(task_id, 'rvi')
             print('Changed status of task to Review Internal.')
         else:
             print("Failed to create video for publishing")
 
-    def build_comp(self, index):
+
+    def build_comp(self):
         """Build composition when shot is double-clicked"""
         nuke_script_path = self.pfm.get_nuke_script_path(new=False)
         print('path is', nuke_script_path)
@@ -581,6 +618,7 @@ class MainWindow(QMainWindow):
             return
         else:
             print('making comp')
+            index = self.tree.currentIndex()
             item = self.tree.model().itemFromIndex(index)
             if item is None:
                 print("No item found for index!")
@@ -600,6 +638,8 @@ class MainWindow(QMainWindow):
 
             # Convert video to images
             image_sequence = self.io_instance.video_to_images(source_video_path, comp_input_path)
+            w, h, fps = self.io_instance.get_video_metadata(source_video_path)
+            self.nuke_instance.set_nuke_project_settings(w, h, fps)
 
             if not image_sequence:
                 print("Failed to convert video to images")
@@ -614,11 +654,17 @@ class NukeHandler():
         self.write_name = 'RenderNode'
         self.pfm_instance = PipelineFileManager()
 
+    def set_nuke_project_settings(self, width, height, fps):
+        nuke.root()['colorManagement'].setValue('OCIO')
+        format_name = f"custom_{int(width)}x{int(height)}"
+        format_str = f"{int(width)} {int(height)} 0 0 {int(width)} {int(height)} 1.0 {format_name}"
+        nuke.addFormat(format_str)
+        nuke.root()['format'].setValue(format_name)
+        nuke.root()['fps'].setValue(float(fps))
 
     def create_comp(self, input_images, tree, script_name):
         """Create new Nuke composition"""
         print('Creating Comp...')
-        nuke.root()['colorManagement'].setValue('OCIO')
 
         try:
             # Create Read node
@@ -671,6 +717,30 @@ class NukeHandler():
 
         except Exception as e:
             print(f"Error creating Nuke composition: {e}")
+
+    def upversion_proj(self, tree):
+        # Update pipeline manager with the new tree/context
+        self.pfm_instance.tree = tree
+        self.pfm_instance.get_data()
+
+        # Get the new versioned Nuke script path
+        nuke_script_name = self.pfm_instance.get_nuke_script_path(new=True)
+        print('Saving name as', nuke_script_name)
+
+        # Get the new versioned output path for the Write node
+        output_path = self.pfm_instance.get_comp_output_path(for_nuke=True)
+        print('New Write node output path:', output_path)
+
+        # Find the Write node and update its file path
+        write_node = nuke.toNode(self.write_name)
+        if write_node is not None and output_path:
+            write_node['file'].setValue(output_path.replace('\\', '/'))
+            print('Updated Write node path to:', output_path)
+        else:
+            print('Write node not found or output path missing.')
+
+        # Save the Nuke script with the new versioned name
+        nuke.scriptSaveAs(nuke_script_name)
 
     def render(self, tree):
         write_node = nuke.toNode(self.write_name)
