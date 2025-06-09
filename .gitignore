@@ -3,6 +3,8 @@
 
 # But do NOT ignore these files/folders:
 !.gitignore
+!README.md
+!LICENSE
 !init.py
 !menu.py
 !CompBuilder/

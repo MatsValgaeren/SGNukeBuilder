@@ -26,7 +26,6 @@ SG = Shotgun(
 
 my_window = None
 
-
 class SGIO:
     def __init__(self, sg_api, user_id):
         self.sg = sg_api

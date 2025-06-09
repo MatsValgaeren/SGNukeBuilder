@@ -1,9 +1,12 @@
 SERVER_PATH = "https://dae-vfx.shotgrid.autodesk.com"
-SHOTGUN_SCRIPT_NAME = "connect"
-SHOTGUN_API_KEY = "sqpzhcmlsv5zvwjz_cfveHjlj"
-PROJECT_FOLDER_LOCATION = r"C:\Users\matsv\Desktop\VfxSem2\Portfolio\CompBuilder"
 LOGIN ="mats.valgaeren@student.howest.be"
 PASSWORD =  "h5ynkORHeiGDh4"
+PROJECT_FOLDER_LOCATION = r"C:\Users\matsv\Desktop\VfxSem2\Portfolio\CompBuilder"
+
+# SHOTGUN_SCRIPT_NAME = "connect"
+SHOTGUN_API_KEY = "sqpzhcmlsv5zvwjz_cfveHjlj"
+
+
 
 # SHOTGUN_SITE = "https://dae-vfx.shotgrid.autodesk.com"
 # SHOTGUN_SCRIPT_NAME = "BLG08"

@@ -1,8 +1,8 @@
 """
 Init file for running CompBuilder
 """
-from CompBuilder import CompBuilder
+from SG-NukeBuilder import SG-NukeBuilder
 
 def run():
     print('started run')
-    CompBuilder.run()
+    SG-NukeBuilder.run()
