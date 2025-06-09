@@ -7,6 +7,6 @@
 !LICENSE
 !init.py
 !menu.py
-!CompBuilder/
-!CompBuilder/**
-CompBuilder/config.py
+!SG_CompBuilder/
+!SG_CompBuilder/**
+SG_CompBuilder/config.py
