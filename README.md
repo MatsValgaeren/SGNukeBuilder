@@ -73,7 +73,8 @@ PROJECT_FOLDER_LOCATION = "D:/projects/my_project"
 
 ## Usage
 
-![cb_screen_v001.png](..%2FDesktop%2FVfxSem2%2FPortfolio%2FCompBuilder%2Fonline%2Fcb_screen_v001.png)
+![cb_screen_v001](https://github.com/user-attachments/assets/fc17e17e-f637-4e48-90f3-a26e8a96f7cb)
+
 1. 
 2. **Run "SGnukeBuilder" -> "Load SG Tree" in Nuke** to open the UI.
 2. **Select your comp task.**
