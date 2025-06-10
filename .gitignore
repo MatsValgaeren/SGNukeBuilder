@@ -7,6 +7,6 @@
 !LICENSE
 !init.py
 !menu.py
-!SG_CompBuilder/
-!SG_CompBuilder/**
-SG_CompBuilder/config.py
+!SGNukeBuilder/
+!SGNukeBuilder/**
+SGNukeBuilder/config.py
